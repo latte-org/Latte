@@ -2,7 +2,6 @@
 
 **Latte** is an open-source LaTeX editing environment that combines the power of a code editor (like Overleaf) with the ease of a Word-style interface. It’s designed for users of all levels — from LaTeX veterans to first-time users — to write beautiful documents faster and with more flexibility.
 
-
 ## 🌟 Project Highlights
 
 - 🧠 **Live LaTeX Editor** – Real-time LaTeX editing with syntax highlighting and preview
@@ -11,70 +10,68 @@
 - 📁 **Built-in Templates** – Quickly start with pre-made document templates (e.g., academic papers, CVs)
 - 🔌 **Extensible Architecture** – Open-source and modular, ready for plugins and custom templates
 
+## 🧠 Why Latte?
 
-## 🧠 Why TexFlow?
-
-LaTeX is powerful but can be intimidating. TexFlow bridges the gap:
+LaTeX is powerful but can be intimidating. Latte bridges the gap:
 
 - For experienced users: it’s a flexible Overleaf-like platform with full code control.
 - For beginners: it provides Word-style controls that generate LaTeX behind the scenes.
 
-TexFlow helps you **focus on content — not syntax**.
+Latte helps you **focus on content — not syntax**.
 
+# 🛠️ Tech Stack (Planned)
 
-## 🛠️ Tech Stack (Planned)
+## 🔹 Framework
 
-### 🔹 Frontend
+- **Tauri** – Desktop application framework
 
-- **React** – UI framework
+## 🔹 Frontend
+
+- **Vite**
+- **Vue**
 - **Monaco Editor** – Code editor (used in VS Code)
-- **Tiptap** – For rich-text (WYSIWYG) visual editing
 - **Tailwind CSS** – Styling system
 
-### 🔹 Backend
+## 🔹 Backend
 
-- **Node.js** or **Rust** – API layer
-- **LaTeX compilation** using `pdflatex`, `tectonic`, or `lualatex`
-- **Docker sandboxing** – To isolate LaTeX compilation for security
+- **Rust** – API layer
+- **LaTeX compilation** using `tectonic`
 
-### 🔹 Other Tools
-
-- **GitHub Actions** – For CI/CD
-- **Express / FastAPI** – API routing
-- **Optional**: WebSockets for real-time collaboration
-
-
-## 📦 Getting Started
+# 📦 Getting Started
 
 > ⚠️ This project is still in early development. Setup instructions will be updated as development progresses.
 
-### 1. Clone the repository
+## Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/texflow.git
+git clone https://github.com/latte-org/Latte.git
 ```
 
-### 2. Install dependencies
-```bash
-npm install
-```
+## Recommended IDE Setup
 
-### 3. Run the development servers
-Frontend:
-```bash
-npm run dev
-```
+- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
-### 4. Access the app
-Visit [http://localhost:3000](http://localhost:3000) in your browser to start using TexFlow.
+## Documentation
 
-## 📄 License
+- [Tauri](https://v2.tauri.app/start/)
+
+## Installation
+
+Please install pre-requisites before starting: 
+- [Tauri Prerequisites](https://v2.tauri.app/start/prerequisites/)
+- [Yarn](https://classic.yarnpkg.com/lang/en/docs/install)
+
+After installing pre-requisites, run the following commands:
+- `yarn`
+- `yarn tauri dev`
+
+# 📄 License
 This project is licensed under the Apache License 2.0.
 You are free to use, modify, and distribute this software under the terms of the license.
 
-See the [LICENSE](https://github.com/sarahvilete/TexFlow?tab=Apache-2.0-1-ov-file) file for full license text.
+See the [LICENSE](https://github.com/latte-org/Latte/blob/main/LICENSE) file for full license text.
 
-## 🤝 Contributing
+# 🤝 Contributing
 We welcome contributions of all kinds — bug fixes, feature suggestions, UI improvements, or documentation.
 
 How to Contribute
