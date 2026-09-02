@@ -12,46 +12,71 @@ pub struct WorkspaceConfig {
 
 /// Initialize workspace - creates .latte folder and config if needed
 #[tauri::command]
-pub async fn init_workspace(workspace_path: String) -> Result<WorkspaceConfig, String> {
+pub async fn init_workspace(
+    workspace_path: String,
+    name: Option<String>,
+) -> Result<WorkspaceConfig, String> {
     let workspace_root = PathBuf::from(&workspace_path);
-    
+
     if !workspace_root.exists() {
-        return Err("Workspace path does not exist".to_string());
+        return Err(format!("Workspace path does not exist: {}", workspace_path));
     }
 
     if !workspace_root.is_dir() {
-        return Err("Workspace path is not a directory".to_string());
+        return Err(format!("Workspace path is not a directory: {}", workspace_path));
     }
 
-    // Create .latte folder
+    // Create .latte folder (and templates/resources placeholders)
     let latte_dir = workspace_root.join(".latte");
     fs::create_dir_all(&latte_dir)
         .map_err(|e| format!("Failed to create .latte directory: {}", e))?;
+    fs::create_dir_all(latte_dir.join("templates"))
+        .map_err(|e| format!("Failed to create templates directory: {}", e))?;
+    fs::create_dir_all(latte_dir.join("resources"))
+        .map_err(|e| format!("Failed to create resources directory: {}", e))?;
+    fs::create_dir_all(latte_dir.join("versions"))
+        .map_err(|e| format!("Failed to create versions directory: {}", e))?;
+
+    let folder_name = workspace_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Workspace")
+        .to_string();
+    let requested_name = name
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let workspace_name = requested_name.clone().unwrap_or(folder_name);
 
     // Check if config already exists
     let config_path = latte_dir.join("workspace.json");
     let config = if config_path.exists() {
-        // Load existing config
+        // Load existing config, optionally override display name
         let config_content = fs::read_to_string(&config_path)
             .map_err(|e| format!("Failed to read workspace config: {}", e))?;
-        serde_json::from_str::<WorkspaceConfig>(&config_content)
-            .map_err(|e| format!("Failed to parse workspace config: {}", e))?
-    } else {
-        // Create new config
-        let workspace_name = workspace_root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("Workspace")
-            .to_string();
+        let mut config: WorkspaceConfig = serde_json::from_str(&config_content)
+            .map_err(|e| format!("Failed to parse workspace config: {}", e))?;
 
+        config.root = workspace_path.clone();
+        if let Some(new_name) = requested_name {
+            if config.name != new_name {
+                config.name = new_name;
+                let config_json = serde_json::to_string_pretty(&config)
+                    .map_err(|e| format!("Failed to serialize workspace config: {}", e))?;
+                fs::write(&config_path, config_json)
+                    .map_err(|e| format!("Failed to write workspace config: {}", e))?;
+            }
+        }
+
+        config
+    } else {
         let config = WorkspaceConfig {
-            name: workspace_name.clone(),
+            name: workspace_name,
             root: workspace_path.clone(),
             templates: Vec::new(),
             resources: Vec::new(),
         };
 
-        // Save config
         let config_json = serde_json::to_string_pretty(&config)
             .map_err(|e| format!("Failed to serialize workspace config: {}", e))?;
         fs::write(&config_path, config_json)
@@ -72,7 +97,7 @@ pub async fn open_workspace(workspace_path: String) -> Result<WorkspaceConfig, S
     
     if !config_path.exists() {
         // Initialize workspace if config doesn't exist
-        return init_workspace(workspace_path).await;
+        return init_workspace(workspace_path, None).await;
     }
 
     let config_content = fs::read_to_string(&config_path)
@@ -185,6 +210,65 @@ pub async fn list_workspace_resources(workspace_path: String) -> Result<Vec<Stri
     Ok(resources)
 }
 
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tif", "tiff",
+];
+
+fn is_image_file(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| {
+                IMAGE_EXTENSIONS
+                    .iter()
+                    .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+            })
+            .unwrap_or(false)
+}
+
+fn collect_image_files(
+    dir: &Path,
+    exclude_dir: Option<&Path>,
+    results: &mut Vec<String>,
+) -> Result<(), String> {
+    if exclude_dir.is_some_and(|skip| dir == skip) {
+        return Ok(());
+    }
+
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_image_files(&path, exclude_dir, results)?;
+        } else if is_image_file(&path) {
+            if let Some(path_str) = path.to_str() {
+                results.push(path_str.to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// List image files in the workspace, including `.latte/resources`.
+#[tauri::command]
+pub async fn list_workspace_images(workspace_path: String) -> Result<Vec<String>, String> {
+    let workspace_root = PathBuf::from(&workspace_path);
+    let latte_dir = workspace_root.join(".latte");
+    let mut images = Vec::new();
+    collect_image_files(&workspace_root, Some(&latte_dir), &mut images)?;
+    collect_image_files(&latte_dir.join("resources"), None, &mut images)?;
+    images.sort();
+    images.dedup();
+    Ok(images)
+}
+
 /// Get template content from workspace
 #[tauri::command]
 pub async fn get_workspace_template(
@@ -245,26 +329,19 @@ pub async fn add_workspace_template(
 #[tauri::command]
 pub async fn update_workspace_settings(
     workspace_path: String,
+    #[allow(unused_mut)]
     name: Option<String>,
     templates: Option<Vec<String>>,
     resources: Option<Vec<String>>,
-) -> Result<(), String> {
-    let config_path = PathBuf::from(&workspace_path)
-        .join(".latte")
-        .join("workspace.json");
-    
-    if !config_path.exists() {
-        return Err("Workspace config not found".to_string());
-    }
-
-    let config_content = fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read workspace config: {}", e))?;
-    
-    let mut config: WorkspaceConfig = serde_json::from_str(&config_content)
-        .map_err(|e| format!("Failed to parse workspace config: {}", e))?;
+) -> Result<WorkspaceConfig, String> {
+    // Ensure workspace exists / is initialized first
+    let mut config = open_workspace(workspace_path.clone()).await?;
 
     if let Some(new_name) = name {
-        config.name = new_name;
+        let trimmed = new_name.trim();
+        if !trimmed.is_empty() {
+            config.name = trimmed.to_string();
+        }
     }
     if let Some(new_templates) = templates {
         config.templates = new_templates;
@@ -273,10 +350,15 @@ pub async fn update_workspace_settings(
         config.resources = new_resources;
     }
 
+    config.root = workspace_path.clone();
+
+    let config_path = PathBuf::from(&workspace_path)
+        .join(".latte")
+        .join("workspace.json");
     let config_json = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize workspace config: {}", e))?;
     fs::write(&config_path, config_json)
         .map_err(|e| format!("Failed to write workspace config: {}", e))?;
 
-    Ok(())
+    Ok(config)
 }

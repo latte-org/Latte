@@ -7,18 +7,51 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies and frontend build
 node_modules
 dist
 dist-ssr
 *.local
+.vite
+*.tsbuildinfo
 
-# Editor directories and files
+# Yarn / npm
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+package-lock.json
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# Tests and coverage
+coverage
+*.lcov
+
+# Editor / OS
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+Thumbs.db
+Desktop.ini
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+*~
+
+# Latte workspace metadata if this repo is opened as a workspace
+.latte/
+
+# Tauri / Cargo (also covered by src-tauri/.gitignore)
+src-tauri/target
+src-tauri/target-test
+src-tauri/gen/schemas

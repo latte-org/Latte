@@ -1,489 +1,646 @@
-<template>
-  <div class="app-container">
-    <!-- Workspace Selector Modal -->
-    <WorkspaceSelector
-      v-if="showWorkspaceSelector"
-      @close="showWorkspaceSelector = false"
-      @workspace-selected="handleWorkspaceSelected"
-    />
-
-    <!-- Simple Toolbar -->
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <button class="btn" @click="showWorkspaceSelector = true" title="Workspace">
-          <span>📁</span> Workspace
-        </button>
-        <div class="divider"></div>
-        <button class="btn" @click="handleNewFile" title="New File">
-          <span>+</span> New
-        </button>
-        <button class="btn" @click="handleOpenFile" title="Open File">Open</button>
-        <button class="btn" @click="handleSaveFile" :disabled="!currentFile" title="Save">
-          Save
-        </button>
-        <div class="divider"></div>
-        <button
-          class="btn mode-btn"
-          :class="{ active: editorMode === 'code' }"
-          @click="editorMode = 'code'"
-        >
-          Code
-        </button>
-        <button
-          class="btn mode-btn"
-          :class="{ active: editorMode === 'rich' }"
-          @click="editorMode = 'rich'"
-        >
-          Rich
-        </button>
-      </div>
-      <div class="toolbar-center">
-        <span v-if="workspaceName" class="workspace-name">{{ workspaceName }}</span>
-        <span v-if="currentFile" class="file-name">{{ getFileName(currentFile) }}</span>
-        <span v-else class="file-name">Untitled</span>
-      </div>
-      <div class="toolbar-right">
-        <label class="auto-compile-toggle">
-          <input type="checkbox" v-model="autoCompile" />
-          <span>Auto-compile</span>
-        </label>
-        <button
-          class="btn compile-btn"
-          :disabled="isCompiling || !fileContent"
-          @click="handleCompilePDF"
-        >
-          {{ isCompiling ? 'Compiling...' : 'Compile PDF' }}
-        </button>
-      </div>
-    </div>
-
-    <!-- Main Layout -->
-    <div class="main-layout">
-      <!-- Workspace Sidebar -->
-      <WorkspaceSidebar
-        v-if="workspacePath"
-        :workspace-path="workspacePath"
-        :workspace-name="workspaceName"
-        :current-file="currentFile"
-        @file-selected="handleFileSelected"
-        @template-selected="handleTemplateSelected"
-      />
-
-      <!-- Editor Panel -->
-      <div class="editor-panel">
-        <MonacoEditor
-          v-if="editorMode === 'code'"
-          :file-path="currentFile || 'untitled.typ'"
-          :content="fileContent"
-          @content-changed="handleContentChanged"
-        />
-        <RichTextEditor
-          v-else
-          :content="fileContent"
-          @content-changed="handleContentChanged"
-        />
-      </div>
-
-      <!-- Preview Panel -->
-      <div class="preview-panel">
-        <div class="preview-header">
-          <span>PDF Preview</span>
-          <button
-            v-if="pdfPreviewData"
-            class="icon-btn"
-            @click="refreshPreview"
-            title="Refresh Preview"
-          >
-            ↻
-          </button>
-        </div>
-        <PreviewPanel :pdf-data="pdfPreviewData" :is-loading="isCompiling" />
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { open, save } from '@tauri-apps/plugin-dialog';
-import MonacoEditor from './components/MonacoEditor.vue';
-import RichTextEditor from './components/RichTextEditor.vue';
-import PreviewPanel from './components/PreviewPanel.vue';
-import WorkspaceSelector from './components/WorkspaceSelector.vue';
-import WorkspaceSidebar from './components/WorkspaceSidebar.vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { invoke, isTauri, browserModeMessage } from '@/lib/backend'
+import {
+  getCurrentWorkspacePath,
+  setCurrentWorkspacePath,
+  upsertRecentWorkspace,
+} from '@/lib/workspaces'
+import {
+  createOrOpenWorkspace,
+  formatInvokeError,
+  pickWorkspaceDirectory,
+} from '@/lib/workspaceActions'
+import {
+  applyTheme,
+  loadSettings,
+  resolvedTheme,
+  startThemeListener,
+  stopThemeListener,
+  type AppSettings,
+} from '@/lib/settings'
+import ContextBar from '@/components/ContextBar.vue'
+import AppSidebar from '@/components/AppSidebar.vue'
+import RightInfoPanel from '@/components/RightInfoPanel.vue'
+import DashboardView from '@/components/DashboardView.vue'
+import TypstSourceEditor from '@/components/TypstSourceEditor.vue'
+import RichTextEditor from '@/components/RichTextEditor.vue'
+import TemplateModal from '@/components/TemplateModal.vue'
+import AppSettingsPanel from '@/components/AppSettings.vue'
+import type { DiagnosticInfo, DraftDocument, OpenTab } from '@/types'
+import { cn } from '@/lib/utils'
 
-const currentFile = ref<string | null>(null);
-const fileContent = ref<string>('#set page(margin: 2cm)\n\n= Hello, Typst!\n\nThis is a simple Typst document.\n\n');
-const editorMode = ref<'code' | 'rich'>('code');
-const autoCompile = ref(true);
-const pdfPreviewData = ref<Uint8Array | null>(null);
-const isCompiling = ref(false);
-const showWorkspaceSelector = ref(true); // Show on startup
-const workspacePath = ref<string | null>(null);
-const workspaceName = ref<string>('');
-let compileTimeout: NodeJS.Timeout | null = null;
+const DEFAULT_CONTENT = '#set page(margin: 2cm)\n\n= Untitled document\n\n'
+const DEFAULT_LABEL = 'Untitled document'
 
-// Auto-compile on content change
+const openTabs = ref<OpenTab[]>([])
+const activeTabIndex = ref(-1)
+const mainView = ref<'dashboard' | 'editor'>('dashboard')
+const editorMode = ref<'code' | 'text'>('code')
+const appSettings = ref<AppSettings>(loadSettings())
+const autoSave = ref(appSettings.value.autoSave)
+const diagnostics = ref<DiagnosticInfo[]>([])
+const showTemplateModal = ref(false)
+const showSettings = ref(false)
+const sidebarOpen = ref(true)
+const workspacePath = ref<string | null>(null)
+const workspaceName = ref('')
+const documents = ref<string[]>([])
+const runningInTauri = isTauri()
+const typstEditorRef = ref<InstanceType<typeof TypstSourceEditor> | null>(null)
+const sidebarRef = ref<InstanceType<typeof AppSidebar> | null>(null)
+
+const editorColorMode = computed(() => resolvedTheme.value)
+
+const handleSettingsChange = (settings: AppSettings) => {
+  appSettings.value = settings
+  autoSave.value = settings.autoSave
+}
+
+const activeTab = computed(() => openTabs.value[activeTabIndex.value] ?? null)
+const currentFile = computed(() => activeTab.value?.path ?? null)
+
+const drafts = computed<DraftDocument[]>(() =>
+  openTabs.value
+    .filter((tab) => !tab.path)
+    .map((tab) => ({
+      id: tab.id,
+      label: tab.label,
+      isDirty: tab.isDirty,
+    }))
+)
+
+const createTabId = () =>
+  `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+const nextUntitledLabel = () => {
+  const labels = new Set(openTabs.value.map((tab) => tab.label.toLowerCase()))
+  if (!labels.has(DEFAULT_LABEL.toLowerCase())) return DEFAULT_LABEL
+
+  let index = 2
+  while (labels.has(`${DEFAULT_LABEL} ${index}`.toLowerCase())) index += 1
+  return `${DEFAULT_LABEL} ${index}`
+}
+
+const contextTitle = computed(() => {
+  if (mainView.value === 'dashboard') {
+    return workspacePath.value ? 'Dashboard' : 'Welcome'
+  }
+  return activeTab.value?.label ?? DEFAULT_LABEL
+})
+
+const windowTitle = computed(() => {
+  if (mainView.value === 'editor' && activeTab.value?.label) {
+    const dirty = activeTab.value.isDirty ? ' •' : ''
+    return `${activeTab.value.label}${dirty} — Latte`
+  }
+  if (workspaceName.value) return `${workspaceName.value} — Latte`
+  return 'Latte'
+})
+
 watch(
-  () => fileContent.value,
-  () => {
-    if (autoCompile.value && fileContent.value) {
-      // Debounce compilation
-      if (compileTimeout) {
-        clearTimeout(compileTimeout);
-      }
-      compileTimeout = setTimeout(() => {
-        compileToPDF();
-      }, 1000); // Wait 1 second after typing stops
+  windowTitle,
+  async (title) => {
+    if (!runningInTauri) {
+      document.title = title
+      return
+    }
+    try {
+      await getCurrentWindow().setTitle(title)
+    } catch {
+      document.title = title
+    }
+  },
+  { immediate: true }
+)
+
+const wordCount = computed(() => {
+  const content = activeTab.value?.content ?? ''
+  const words = content.trim().match(/\S+/g)
+  return words?.length ?? 0
+})
+
+const lineCount = computed(() => {
+  const content = activeTab.value?.content ?? ''
+  if (!content) return 0
+  return content.split('\n').length
+})
+
+let saveTimeout: ReturnType<typeof setTimeout> | null = null
+let diagnosticsTimeout: ReturnType<typeof setTimeout> | null = null
+
+const getFileName = (path: string) => path.split(/[/\\]/).pop() || path
+
+const sanitizeFileName = (label: string) => {
+  const cleaned = label
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
+    .replace(/\s+/g, ' ')
+  const base = cleaned || DEFAULT_LABEL
+  return base.toLowerCase().endsWith('.typ') ? base : `${base}.typ`
+}
+
+const refreshDocuments = async () => {
+  if (!workspacePath.value) {
+    documents.value = []
+    return
+  }
+  try {
+    documents.value = await invoke<string[]>('list_workspace_documents', {
+      workspacePath: workspacePath.value,
+    })
+  } catch (error) {
+    console.error('Failed to list documents:', error)
+  }
+}
+
+const openTabForFile = (path: string | null, content: string, label?: string) => {
+  if (path) {
+    const existing = openTabs.value.findIndex((tab) => tab.path === path)
+    if (existing >= 0) {
+      activeTabIndex.value = existing
+      mainView.value = 'editor'
+      return
     }
   }
-);
+
+  openTabs.value.push({
+    id: createTabId(),
+    path,
+    label: label ?? (path ? getFileName(path) : nextUntitledLabel()),
+    content,
+    isDirty: !path,
+  })
+  activeTabIndex.value = openTabs.value.length - 1
+  mainView.value = 'editor'
+}
 
 const handleContentChanged = (content: string) => {
-  fileContent.value = content;
-};
+  const tab = activeTab.value
+  if (!tab) return
 
-const handleNewFile = async () => {
+  tab.content = content
+  tab.isDirty = true
+
+  if (autoSave.value && tab.path) {
+    if (saveTimeout) clearTimeout(saveTimeout)
+    saveTimeout = setTimeout(() => {
+      autoSaveTab(tab)
+    }, 2000)
+  }
+
+  scheduleDiagnostics()
+}
+
+const autoSaveTab = async (tab: OpenTab) => {
+  if (!tab.path || !tab.isDirty) return
   try {
-    // Ask user where to save
-    const filePath = await save({
-      filters: [
-        {
-          name: 'Typst',
-          extensions: ['typ'],
-        },
-      ],
-      defaultPath: 'document.typ',
-    });
+    await invoke('write_file', { path: tab.path, contents: tab.content })
+    tab.isDirty = false
+  } catch (error) {
+    console.error('Auto-save failed:', error)
+  }
+}
 
-    if (filePath && typeof filePath === 'string') {
-      // Create empty file
-      const defaultContent = '#set page(margin: 2cm)\n\n= New Document\n\n';
+const fetchDiagnostics = async () => {
+  if (!currentFile.value || !runningInTauri) {
+    diagnostics.value = []
+    return
+  }
+
+  try {
+    if (activeTab.value?.isDirty && activeTab.value.path) {
       await invoke('write_file', {
-        path: filePath,
-        contents: defaultContent,
-      });
-      currentFile.value = filePath;
-      fileContent.value = defaultContent;
-      // Auto-compile if enabled
-      if (autoCompile.value) {
-        await compileToPDF();
-      }
+        path: activeTab.value.path,
+        contents: activeTab.value.content,
+      })
+      activeTab.value.isDirty = false
     }
-  } catch (error) {
-    console.error('Failed to create new file:', error);
-    // If user cancelled, just create untitled document
-    currentFile.value = null;
-    fileContent.value = '#set page(margin: 2cm)\n\n= New Document\n\n';
-  }
-};
 
-const handleOpenFile = async () => {
-  try {
-    const selected = await open({
-      multiple: false,
-      filters: [
-        {
-          name: 'Typst',
-          extensions: ['typ'],
-        },
-      ],
-    });
-    if (selected && typeof selected === 'string') {
-      await handleFileSelected(selected);
-    }
-  } catch (error) {
-    console.error('Failed to open file:', error);
+    diagnostics.value = await invoke<DiagnosticInfo[]>('get_typst_diagnostics', {
+      entryPath: currentFile.value,
+    })
+  } catch {
+    diagnostics.value = []
   }
-};
+}
+
+const scheduleDiagnostics = () => {
+  if (diagnosticsTimeout) clearTimeout(diagnosticsTimeout)
+  diagnosticsTimeout = setTimeout(() => {
+    fetchDiagnostics()
+  }, 800)
+}
+
+const persistUntitledTab = async (tab: OpenTab) => {
+  if (!workspacePath.value) {
+    // Never open a folder picker while creating/saving a draft.
+    alert('Open a workspace first to save this document to disk.')
+    return false
+  }
+
+  const separator = workspacePath.value.includes('\\') ? '\\' : '/'
+  let fileName = sanitizeFileName(tab.label)
+  let targetPath = `${workspacePath.value}${separator}${fileName}`
+
+  let suffix = 2
+  while (documents.value.includes(targetPath)) {
+    const stem = fileName.replace(/\.typ$/i, '')
+    fileName = `${stem} ${suffix}.typ`
+    targetPath = `${workspacePath.value}${separator}${fileName}`
+    suffix += 1
+  }
+
+  await invoke('write_file', { path: targetPath, contents: tab.content })
+  tab.path = targetPath
+  tab.label = getFileName(targetPath)
+  tab.isDirty = false
+  sidebarRef.value?.refresh()
+  await refreshDocuments()
+  return true
+}
+
+const handleNewFile = () => {
+  // Always open an in-memory editor tab — never show a file/folder dialog.
+  openTabForFile(null, DEFAULT_CONTENT, nextUntitledLabel())
+  diagnostics.value = []
+  sidebarOpen.value = true
+}
+
+const handleBuiltinTemplateSelected = async (templateName: string) => {
+  showTemplateModal.value = false
+  try {
+    const templateContent = await invoke<string>('get_template', { name: templateName })
+    const label =
+      templateName.charAt(0).toUpperCase() + templateName.slice(1).replace(/-/g, ' ')
+    openTabForFile(null, templateContent, label)
+    diagnostics.value = []
+    sidebarOpen.value = true
+  } catch (error) {
+    console.error('Failed to create from template:', error)
+  }
+}
 
 const handleSaveFile = async () => {
-  if (!currentFile.value) {
-    // Save as new file
-    await handleNewFile();
-    return;
-  }
+  const tab = activeTab.value
+  if (!tab) return
 
   try {
-    await invoke('write_file', {
-      path: currentFile.value,
-      contents: fileContent.value,
-    });
-  } catch (error) {
-    console.error('Failed to save file:', error);
-  }
-};
-
-const handleCompilePDF = async () => {
-  await compileToPDF();
-};
-
-const compileToPDF = async () => {
-  if (!fileContent.value.trim()) return;
-
-  isCompiling.value = true;
-  try {
-    let pdfBytes: number[];
-
-    if (currentFile.value) {
-      // Save first if file exists
-      await invoke('write_file', {
-        path: currentFile.value,
-        contents: fileContent.value,
-      });
-      // Compile from file
-      pdfBytes = await invoke<number[]>('compile_typst_to_pdf', {
-        entry_path: currentFile.value,
-      });
-    } else {
-      // Compile from string (untitled document)
-      pdfBytes = await invoke<number[]>('compile_typst_string_to_pdf', {
-        source: fileContent.value,
-        root_dir: null,
-      });
+    if (!tab.path) {
+      await persistUntitledTab(tab)
+      scheduleDiagnostics()
+      return
     }
 
-    pdfPreviewData.value = new Uint8Array(pdfBytes);
+    await invoke('write_file', { path: tab.path, contents: tab.content })
+    tab.isDirty = false
+    scheduleDiagnostics()
   } catch (error) {
-    console.error('Compilation failed:', error);
-    // Show error in preview or handle it
-  } finally {
-    isCompiling.value = false;
+    console.error('Failed to save file:', error)
   }
-};
+}
 
-const refreshPreview = () => {
-  compileToPDF();
-};
+const handleRenameTitle = async (name: string) => {
+  const tab = activeTab.value
+  if (!tab) return
 
-const getFileName = (path: string) => {
-  return path.split(/[/\\]/).pop() || path;
-};
+  const nextLabel = name.trim()
+  if (!nextLabel) return
+
+  if (!tab.path) {
+    tab.label = nextLabel
+    tab.isDirty = true
+    return
+  }
+
+  const separator = tab.path.includes('\\') ? '\\' : '/'
+  const directory = tab.path.split(/[/\\]/).slice(0, -1).join(separator)
+  const newPath = `${directory}${separator}${sanitizeFileName(nextLabel)}`
+
+  if (newPath === tab.path) {
+    tab.label = getFileName(tab.path)
+    return
+  }
+
+  try {
+    await invoke('rename_file', { oldPath: tab.path, newPath })
+    tab.path = newPath
+    tab.label = getFileName(newPath)
+    sidebarRef.value?.refresh()
+    await refreshDocuments()
+  } catch (error) {
+    console.error('Failed to rename document:', error)
+  }
+}
 
 const handleWorkspaceSelected = async (path: string) => {
-  workspacePath.value = path;
-  showWorkspaceSelector.value = false;
-  localStorage.setItem('current-workspace', path);
-  
+  workspacePath.value = path
+  setCurrentWorkspacePath(path)
+  mainView.value = 'dashboard'
+  openTabs.value = []
+  activeTabIndex.value = -1
+  diagnostics.value = []
+
   try {
-    const config = await invoke<any>('open_workspace', {
-      workspace_path: path,
-    });
-    workspaceName.value = config.name;
-
-    // Load workspace documents (recursive search)
-    const documents = await invoke<string[]>('list_workspace_documents', {
-      workspace_path: path,
-    });
-
-    // Open main.typ if it exists, otherwise first document
-    const mainFile = documents.find((d) => d.endsWith('main.typ')) || documents[0];
-    if (mainFile) {
-      await handleFileSelected(mainFile);
-    }
+    const config = await invoke<{ name: string }>('open_workspace', {
+      workspacePath: path,
+    })
+    workspaceName.value = config.name
+    upsertRecentWorkspace(config.name, path)
+    await refreshDocuments()
   } catch (error) {
-    console.error('Failed to load workspace:', error);
+    console.error('Failed to load workspace:', error)
+    workspacePath.value = null
+    workspaceName.value = ''
+    setCurrentWorkspacePath(null)
   }
-};
+}
+
+const handleWorkspaceRenamed = (name: string) => {
+  workspaceName.value = name
+  if (workspacePath.value) {
+    upsertRecentWorkspace(name, workspacePath.value)
+  }
+}
+
+const handleAddWorkspace = async () => {
+  try {
+    const selected = await pickWorkspaceDirectory()
+    if (!selected) return
+
+    const config = await createOrOpenWorkspace(selected)
+    await handleWorkspaceSelected(config.root || selected)
+  } catch (error) {
+    console.error('Failed to add workspace:', error)
+    alert(`Failed to open workspace folder.\n\n${formatInvokeError(error)}`)
+  }
+}
 
 const handleFileSelected = async (filePath: string) => {
   try {
-    currentFile.value = filePath;
-    fileContent.value = await invoke('read_file', { path: filePath });
-    // Auto-compile if enabled
-    if (autoCompile.value) {
-      await compileToPDF();
+    const content = await invoke<string>('read_file', { path: filePath })
+    openTabForFile(filePath, content)
+    scheduleDiagnostics()
+  } catch (error) {
+    console.error('Failed to open file:', error)
+  }
+}
+
+const handleDraftSelected = (id: string) => {
+  const index = openTabs.value.findIndex((tab) => tab.id === id)
+  if (index < 0) return
+  activeTabIndex.value = index
+  mainView.value = 'editor'
+  diagnostics.value = []
+}
+
+const handleDraftRenamed = (id: string, name: string) => {
+  const tab = openTabs.value.find((item) => item.id === id)
+  if (!tab || tab.path) return
+  tab.label = name.trim() || DEFAULT_LABEL
+  tab.isDirty = true
+}
+
+const handleDraftClosed = (id: string) => {
+  const index = openTabs.value.findIndex((tab) => tab.id === id)
+  if (index < 0) return
+
+  openTabs.value.splice(index, 1)
+  if (openTabs.value.length === 0) {
+    activeTabIndex.value = -1
+    mainView.value = 'dashboard'
+    diagnostics.value = []
+    return
+  }
+
+  if (activeTabIndex.value >= openTabs.value.length) {
+    activeTabIndex.value = openTabs.value.length - 1
+  } else if (index < activeTabIndex.value) {
+    activeTabIndex.value -= 1
+  }
+}
+
+const handleFileDeleted = async (filePath: string) => {
+  const tabIndex = openTabs.value.findIndex((tab) => tab.path === filePath)
+  if (tabIndex >= 0) {
+    openTabs.value.splice(tabIndex, 1)
+    if (openTabs.value.length === 0) {
+      activeTabIndex.value = -1
+      mainView.value = 'dashboard'
+      diagnostics.value = []
+    } else {
+      activeTabIndex.value = Math.min(tabIndex, openTabs.value.length - 1)
     }
-  } catch (error) {
-    console.error('Failed to open file:', error);
   }
-};
+  await refreshDocuments()
+}
 
-const handleTemplateSelected = async (templateName: string) => {
-  if (!workspacePath.value) return;
-  
-  try {
-    const templateContent = await invoke<string>('get_workspace_template', {
-      workspace_path: workspacePath.value,
-      template_name: templateName,
-    });
-    
-    // Create new document from template in workspace root
-    const newFileName = `${templateName}-${Date.now()}.typ`;
-    const newFilePath = `${workspacePath.value}/${newFileName}`;
-    
-    await invoke('write_file', {
-      path: newFilePath,
-      contents: templateContent,
-    });
-    
-    await handleFileSelected(newFilePath);
-  } catch (error) {
-    console.error('Failed to load template:', error);
+const handleFileRenamed = (oldPath: string, newPath: string) => {
+  const tab = openTabs.value.find((item) => item.path === oldPath)
+  if (tab) {
+    tab.path = newPath
+    tab.label = getFileName(newPath)
   }
-};
+  refreshDocuments()
+}
 
-onMounted(() => {
-  // Check if there's a saved workspace
-  const savedWorkspace = localStorage.getItem('current-workspace');
+const handleOpenDashboard = () => {
+  mainView.value = 'dashboard'
+}
+
+const handleDiagnosticClicked = async (diagnostic: DiagnosticInfo) => {
+  if (editorMode.value !== 'code') {
+    editorMode.value = 'code'
+    await nextTick()
+  }
+
+  if (diagnostic.span?.line) {
+    typstEditorRef.value?.goToLine(diagnostic.span.line, diagnostic.span.column)
+  }
+}
+
+const handleEditorModeChange = (mode: 'code' | 'text') => {
+  editorMode.value = mode
+}
+
+const handleKeyDown = (event: KeyboardEvent) => {
+  const ctrl = event.ctrlKey || event.metaKey
+  if (!ctrl) return
+
+  const target = event.target as HTMLElement | null
+  const inEditor = Boolean(
+    target?.closest('.ProseMirror, textarea, input, [contenteditable="true"]')
+  )
+
+  if (event.key === 's') {
+    event.preventDefault()
+    if (mainView.value === 'editor') void handleSaveFile()
+    return
+  }
+
+  if (inEditor) return
+
+  if (event.key === 'n') {
+    event.preventDefault()
+    handleNewFile()
+  } else if (event.key === 'b') {
+    event.preventDefault()
+    sidebarOpen.value = !sidebarOpen.value
+  }
+}
+
+watch(mainView, (view) => {
+  if (view === 'editor') scheduleDiagnostics()
+})
+
+onMounted(async () => {
+  applyTheme(appSettings.value.theme)
+  startThemeListener()
+  window.addEventListener('keydown', handleKeyDown)
+
+  if (!runningInTauri) {
+    console.warn(browserModeMessage)
+    return
+  }
+
+  const savedWorkspace = getCurrentWorkspacePath()
   if (savedWorkspace) {
-    handleWorkspaceSelected(savedWorkspace);
+    await handleWorkspaceSelected(savedWorkspace)
   }
-  // Initial compile if there's content and workspace is loaded
-  if (!showWorkspaceSelector.value && autoCompile.value && fileContent.value) {
-    setTimeout(() => compileToPDF(), 500);
-  }
-});
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeyDown)
+  stopThemeListener()
+  if (saveTimeout) clearTimeout(saveTimeout)
+  if (diagnosticsTimeout) clearTimeout(diagnosticsTimeout)
+})
 </script>
 
-<style>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
+<template>
+  <div class="flex h-full w-full flex-col bg-background">
+    <TemplateModal
+      v-model:open="showTemplateModal"
+      @template-selected="handleBuiltinTemplateSelected"
+    />
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
-    sans-serif;
-  overflow: hidden;
-}
+    <AppSettingsPanel
+      v-model:open="showSettings"
+      @change="handleSettingsChange"
+    />
 
-.app-container {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  background: #1e1e1e;
-  color: #cccccc;
-}
+    <ContextBar
+      :sidebar-open="sidebarOpen"
+      :workspace-name="workspaceName"
+      :workspace-path="workspacePath"
+      :title="contextTitle"
+      :is-dirty="activeTab?.isDirty"
+      :view="mainView"
+      :title-editable="mainView === 'editor' && !!activeTab"
+      @toggle-sidebar="sidebarOpen = !sidebarOpen"
+      @workspace-selected="handleWorkspaceSelected"
+      @workspace-renamed="handleWorkspaceRenamed"
+      @open-settings="showSettings = true"
+      @rename-title="handleRenameTitle"
+    />
 
-.toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
-  background: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  height: 48px;
-}
+    <div class="flex min-h-0 flex-1 overflow-hidden">
+      <aside
+        :class="
+          cn(
+            'flex h-full shrink-0 flex-col border-r border-border/60 bg-sidebar transition-[width,opacity] duration-200 ease-out',
+            sidebarOpen ? 'w-[260px] opacity-100' : 'w-0 overflow-hidden border-r-0 opacity-0'
+          )
+        "
+      >
+        <AppSidebar
+          v-show="sidebarOpen"
+          ref="sidebarRef"
+          class="h-full w-[260px]"
+          :workspace-path="workspacePath"
+          :current-file="currentFile"
+          :active-draft-id="activeTab && !activeTab.path ? activeTab.id : null"
+          :drafts="drafts"
+          :active-view="mainView"
+          @file-selected="handleFileSelected"
+          @file-deleted="handleFileDeleted"
+          @file-renamed="handleFileRenamed"
+          @draft-selected="handleDraftSelected"
+          @draft-renamed="handleDraftRenamed"
+          @draft-closed="handleDraftClosed"
+          @open-dashboard="handleOpenDashboard"
+          @new-document="handleNewFile"
+        />
+      </aside>
 
-.toolbar-left,
-.toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+      <main
+        :class="
+          cn(
+            'flex min-w-0 flex-1 flex-col overflow-hidden',
+            mainView === 'editor' ? 'bg-muted/30 p-3' : 'bg-background'
+          )
+        "
+      >
+        <DashboardView
+          v-if="mainView === 'dashboard'"
+          :workspace-name="workspaceName"
+          :workspace-path="workspacePath"
+          :documents="documents"
+          :running-in-tauri="runningInTauri"
+          @add-workspace="handleAddWorkspace"
+          @new-document="handleNewFile"
+          @open-template="showTemplateModal = true"
+          @file-selected="handleFileSelected"
+        />
 
-.toolbar-center {
-  flex: 1;
-  text-align: center;
-}
+        <div
+          v-else-if="activeTab"
+          class="h-full min-h-0 overflow-hidden rounded-3xl border border-border/60 bg-card shadow-sm"
+        >
+          <TypstSourceEditor
+            v-if="editorMode === 'code'"
+            ref="typstEditorRef"
+            :content="activeTab.content"
+            :diagnostics="diagnostics"
+            :color-mode="editorColorMode"
+            :font-size="appSettings.editorFontSize"
+            :workspace-path="workspacePath"
+            @content-changed="handleContentChanged"
+            @update:editor-mode="handleEditorModeChange"
+          />
+          <RichTextEditor
+            v-else
+            :content="activeTab.content"
+            :workspace-path="workspacePath"
+            @content-changed="handleContentChanged"
+            @update:editor-mode="handleEditorModeChange"
+          />
+        </div>
 
-.file-name {
-  color: #cccccc;
-  font-size: 13px;
-}
+        <div
+          v-else
+          class="flex h-full items-center justify-center text-sm text-muted-foreground"
+        >
+          Select a document to start editing.
+        </div>
+      </main>
 
-.btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: #3e3e42;
-  border: none;
-  border-radius: 4px;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 13px;
-  transition: background 0.2s;
-}
-
-.btn:hover:not(:disabled) {
-  background: #505050;
-}
-
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.mode-btn.active {
-  background: #007acc;
-  color: white;
-}
-
-.compile-btn {
-  background: #007acc;
-  color: white;
-}
-
-.compile-btn:hover:not(:disabled) {
-  background: #0098ff;
-}
-
-.divider {
-  width: 1px;
-  height: 24px;
-  background: #3e3e42;
-  margin: 0 8px;
-}
-
-.auto-compile-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.auto-compile-toggle input {
-  cursor: pointer;
-}
-
-.main-layout {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-
-.editor-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border-right: 1px solid #3e3e42;
-}
-
-.preview-panel {
-  width: 50%;
-  display: flex;
-  flex-direction: column;
-  background: #252526;
-}
-
-.preview-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
-  background: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  font-size: 13px;
-  color: #cccccc;
-}
-
-.icon-btn {
-  background: transparent;
-  border: none;
-  color: #cccccc;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 16px;
-}
-
-.icon-btn:hover {
-  background: #3e3e42;
-}
-</style>
+      <RightInfoPanel
+        v-if="mainView === 'editor' && activeTab"
+        class="h-full min-h-0"
+        :file-name="activeTab.label"
+        :file-path="activeTab.path"
+        :file-content="activeTab.content"
+        :workspace-path="workspacePath"
+        :is-dirty="activeTab.isDirty"
+        :auto-save="autoSave"
+        :diagnostics="diagnostics"
+        :word-count="wordCount"
+        :line-count="lineCount"
+        :save-document="handleSaveFile"
+        @diagnostic-clicked="handleDiagnosticClicked"
+      />
+    </div>
+  </div>
+</template>

@@ -38,7 +38,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -46,11 +46,20 @@ serde_json = "1"
 typst = "0.14.0"
 typst-pdf = "0.14.0"
 typst-library = "0.14.0"
-typst-assets = "0.14.0"
+typst-assets = { version = "0.14.0", features = ["fonts"] }
 typst-ide = "0.14.0"
 typst-html = "0.14.0"
 typst-utils = "0.14.0"
 tempfile = "3"
+zip = "2"
+walkdir = "2"
+typst-svg = "0.14.0"
+typst-render = "0.14.0"
+base64 = "0.23.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros"] }
 
 [package.metadata.vcpkg]
 git = "https://github.com/microsoft/vcpkg"

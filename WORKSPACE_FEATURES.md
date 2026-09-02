@@ -24,11 +24,12 @@
 When you create a workspace, it creates:
 ```
 workspace-name/
-├── .latte-workspace.json    # Workspace configuration
-├── documents/                # Your Typst documents
-│   └── main.typ            # Default document
-├── templates/               # Reusable templates
-└── resources/              # Images, fonts, etc.
+├── .latte/                    # Hidden Latte settings
+│   ├── workspace.json          # Workspace configuration
+│   ├── templates/              # Reusable templates
+│   └── resources/              # Images, fonts, etc.
+├── main.typ                    # Your Typst documents (anywhere in tree)
+└── ...
 ```
 
 #### Workspace Features

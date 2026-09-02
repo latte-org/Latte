@@ -7,7 +7,7 @@
     <div class="sidebar-section">
       <div class="section-header">
         <span>📄 Documents</span>
-        <button class="icon-btn-small" @click="refreshDocuments" title="Refresh">↻</button>
+        <button class="icon-btn-small" @click="refresh" title="Refresh">↻</button>
       </div>
       <div class="file-list">
         <div
@@ -17,7 +17,21 @@
           @click="$emit('file-selected', doc)"
         >
           <span class="file-icon">📄</span>
-          <span class="file-name">{{ getFileName(doc) }}</span>
+          <span v-if="renamingPath !== doc" class="file-name">{{ getFileName(doc) }}</span>
+          <input
+            v-else
+            ref="renameInputRef"
+            v-model="renameValue"
+            class="rename-input"
+            @keydown.enter="submitRename(doc)"
+            @keydown.escape="cancelRename"
+            @blur="submitRename(doc)"
+            @click.stop
+          />
+          <button class="action-btn" title="Rename file" @click.stop="startRename(doc)">✎</button>
+          <button class="action-btn delete-btn" title="Delete file" @click.stop="handleDelete(doc)">
+            ×
+          </button>
         </div>
         <div v-if="documents.length === 0" class="empty-state">No documents</div>
       </div>
@@ -50,6 +64,7 @@
           v-for="resource in resources"
           :key="resource"
           class="file-item resource-item"
+          :title="resource"
         >
           <span class="file-icon">📦</span>
           <span class="file-name">{{ getFileName(resource) }}</span>
@@ -61,8 +76,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { ref, onMounted, watch, nextTick } from 'vue';
+import { invoke } from '../lib/backend';
 
 const props = defineProps<{
   workspacePath: string | null;
@@ -70,17 +85,28 @@ const props = defineProps<{
   currentFile: string | null;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   'file-selected': [path: string];
   'template-selected': [name: string];
+  'file-deleted': [path: string];
+  'file-renamed': [oldPath: string, newPath: string];
 }>();
 
 const documents = ref<string[]>([]);
 const templates = ref<string[]>([]);
 const resources = ref<string[]>([]);
+const renamingPath = ref<string | null>(null);
+const renameValue = ref('');
+const renameInputRef = ref<HTMLInputElement | null>(null);
 
 const getFileName = (path: string) => {
   return path.split(/[/\\]/).pop() || path;
+};
+
+const getDirectory = (path: string) => {
+  const parts = path.split(/[/\\]/);
+  parts.pop();
+  return parts.join(path.includes('\\') ? '\\' : '/');
 };
 
 const loadWorkspaceData = async () => {
@@ -89,13 +115,13 @@ const loadWorkspaceData = async () => {
   try {
     const [docs, tmpls, res] = await Promise.all([
       invoke<string[]>('list_workspace_documents', {
-        workspace_path: props.workspacePath,
+        workspacePath: props.workspacePath,
       }),
       invoke<string[]>('list_workspace_templates', {
-        workspace_path: props.workspacePath,
+        workspacePath: props.workspacePath,
       }),
       invoke<string[]>('list_workspace_resources', {
-        workspace_path: props.workspacePath,
+        workspacePath: props.workspacePath,
       }),
     ]);
 
@@ -107,14 +133,66 @@ const loadWorkspaceData = async () => {
   }
 };
 
-const refreshDocuments = async () => {
+const refresh = async () => {
   await loadWorkspaceData();
+};
+
+const handleDelete = async (filePath: string) => {
+  if (!confirm(`Delete ${getFileName(filePath)}?`)) return;
+
+  try {
+    await invoke('delete_file', { path: filePath });
+    emit('file-deleted', filePath);
+    await loadWorkspaceData();
+  } catch (error) {
+    console.error('Failed to delete file:', error);
+  }
+};
+
+const startRename = async (filePath: string) => {
+  renamingPath.value = filePath;
+  renameValue.value = getFileName(filePath);
+  await nextTick();
+  renameInputRef.value?.focus();
+  renameInputRef.value?.select();
+};
+
+const cancelRename = () => {
+  renamingPath.value = null;
+  renameValue.value = '';
+};
+
+const submitRename = async (filePath: string) => {
+  if (renamingPath.value !== filePath) return;
+
+  const newName = renameValue.value.trim();
+  renamingPath.value = null;
+
+  if (!newName || newName === getFileName(filePath)) {
+    renameValue.value = '';
+    return;
+  }
+
+  const separator = filePath.includes('\\') ? '\\' : '/';
+  const newPath = `${getDirectory(filePath)}${separator}${newName.endsWith('.typ') ? newName : `${newName}.typ`}`;
+
+  try {
+    await invoke('rename_file', { oldPath: filePath, newPath: newPath });
+    emit('file-renamed', filePath, newPath);
+    await loadWorkspaceData();
+  } catch (error) {
+    console.error('Failed to rename file:', error);
+  } finally {
+    renameValue.value = '';
+  }
 };
 
 watch(() => props.workspacePath, loadWorkspaceData, { immediate: true });
 onMounted(() => {
   loadWorkspaceData();
 });
+
+defineExpose({ refresh });
 </script>
 
 <style scoped>
@@ -158,16 +236,25 @@ onMounted(() => {
   text-transform: uppercase;
 }
 
-.icon-btn-small {
+.icon-btn-small,
+.action-btn {
   background: transparent;
   border: none;
   color: #858585;
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 0 4px;
   font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.15s;
 }
 
-.icon-btn-small:hover {
+.file-item:hover .icon-btn-small,
+.file-item:hover .action-btn {
+  opacity: 1;
+}
+
+.icon-btn-small:hover,
+.action-btn:hover {
   color: #cccccc;
 }
 
@@ -206,6 +293,21 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.rename-input {
+  flex: 1;
+  min-width: 0;
+  background: #1e1e1e;
+  border: 1px solid #007acc;
+  border-radius: 3px;
+  color: #cccccc;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.delete-btn:hover {
+  color: #f48771;
 }
 
 .template-item:hover {

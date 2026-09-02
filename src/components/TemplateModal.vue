@@ -1,170 +1,104 @@
-<template>
-  <div class="modal-overlay" @click="$emit('close')">
-    <div class="modal-content" @click.stop>
-      <div class="modal-header">
-        <h2>Choose a Template</h2>
-        <button class="close-btn" @click="$emit('close')">×</button>
-      </div>
-      <div class="templates-grid">
-        <div
-          v-for="template in templates"
-          :key="template"
-          class="template-card"
-          @click="selectTemplate(template)"
-        >
-          <div class="template-icon">{{ getTemplateIcon(template) }}</div>
-          <h3>{{ getTemplateName(template) }}</h3>
-          <p>{{ getTemplateDescription(template) }}</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { ref, onMounted } from 'vue'
+import { FileText, Mail, BookOpen, Presentation } from '@lucide/vue'
+import { invoke } from '@/lib/backend'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+
+defineProps<{
+  open: boolean
+}>()
 
 const emit = defineEmits<{
-  close: [];
-  'template-selected': [name: string];
-}>();
+  'update:open': [value: boolean]
+  'template-selected': [name: string]
+}>()
 
-const templates = ref<string[]>([]);
+const templates = ref<string[]>([])
 
 onMounted(async () => {
   try {
-    templates.value = await invoke<string[]>('list_templates');
+    templates.value = await invoke<string[]>('list_templates')
   } catch (error) {
-    console.error('Failed to load templates:', error);
+    console.error('Failed to load templates:', error)
   }
-});
+})
 
 const selectTemplate = (template: string) => {
-  emit('template-selected', template);
-};
+  emit('template-selected', template)
+  emit('update:open', false)
+}
 
-const getTemplateIcon = (template: string): string => {
-  const icons: Record<string, string> = {
-    article: '📄',
-    letter: '✉️',
-    cv: '📋',
-    report: '📊',
-  };
-  return icons[template] || '📝';
-};
+const getTemplateIcon = (template: string) => {
+  const icons: Record<string, typeof FileText> = {
+    article: FileText,
+    letter: Mail,
+    report: BookOpen,
+    presentation: Presentation,
+  }
+  return icons[template] || FileText
+}
 
-const getTemplateName = (template: string): string => {
-  return template.charAt(0).toUpperCase() + template.slice(1);
-};
+const getTemplateName = (template: string) =>
+  template.charAt(0).toUpperCase() + template.slice(1)
 
-const getTemplateDescription = (template: string): string => {
+const getTemplateDescription = (template: string) => {
   const descriptions: Record<string, string> = {
-    article: 'Academic paper or article format',
+    article: 'Academic or blog article layout',
     letter: 'Formal letter template',
-    cv: 'Curriculum vitae / Resume',
-    report: 'Professional report template',
-  };
-  return descriptions[template] || 'Document template';
-};
+    report: 'Structured report with sections',
+    presentation: 'Slide-style Typst document',
+  }
+  return descriptions[template] || 'Typst template'
+}
 </script>
 
-<style scoped>
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
+<template>
+  <Dialog
+    :open="open"
+    @update:open="emit('update:open', $event)"
+  >
+    <DialogContent class="gap-0 overflow-hidden rounded-3xl p-0 sm:max-w-xl">
+      <DialogHeader class="space-y-1 border-b border-border/60 px-6 py-5">
+        <DialogTitle>Choose a template</DialogTitle>
+        <DialogDescription>
+          Start a new document from a built-in Typst template.
+        </DialogDescription>
+      </DialogHeader>
 
-.modal-content {
-  background: #252526;
-  border-radius: 8px;
-  width: 90%;
-  max-width: 800px;
-  max-height: 80vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-}
+      <div class="grid gap-2 p-5 sm:grid-cols-2">
+        <button
+          v-for="template in templates"
+          :key="template"
+          class="flex flex-col items-start gap-3 rounded-2xl border border-border/70 bg-card p-4 text-left transition hover:border-primary/30 hover:bg-accent/40"
+          @click="selectTemplate(template)"
+        >
+          <div class="flex size-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+            <component
+              :is="getTemplateIcon(template)"
+              class="size-5"
+            />
+          </div>
+          <div>
+            <p class="font-medium">{{ getTemplateName(template) }}</p>
+            <p class="mt-1 text-xs text-muted-foreground">
+              {{ getTemplateDescription(template) }}
+            </p>
+          </div>
+        </button>
 
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 24px;
-  border-bottom: 1px solid #3e3e42;
-}
-
-.modal-header h2 {
-  font-size: 20px;
-  color: #cccccc;
-}
-
-.close-btn {
-  background: transparent;
-  border: none;
-  color: #cccccc;
-  font-size: 28px;
-  cursor: pointer;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  transition: background 0.2s;
-}
-
-.close-btn:hover {
-  background: #3e3e42;
-}
-
-.templates-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 16px;
-  padding: 24px;
-  overflow-y: auto;
-}
-
-.template-card {
-  background: #2d2d30;
-  border: 1px solid #3e3e42;
-  border-radius: 6px;
-  padding: 20px;
-  cursor: pointer;
-  transition: all 0.2s;
-  text-align: center;
-}
-
-.template-card:hover {
-  background: #3e3e42;
-  border-color: #007acc;
-  transform: translateY(-2px);
-}
-
-.template-icon {
-  font-size: 48px;
-  margin-bottom: 12px;
-}
-
-.template-card h3 {
-  font-size: 16px;
-  color: #cccccc;
-  margin-bottom: 8px;
-}
-
-.template-card p {
-  font-size: 12px;
-  color: #858585;
-  line-height: 1.4;
-}
-</style>
+        <p
+          v-if="templates.length === 0"
+          class="col-span-full py-8 text-center text-sm text-muted-foreground"
+        >
+          No templates available.
+        </p>
+      </div>
+    </DialogContent>
+  </Dialog>
+</template>

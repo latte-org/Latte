@@ -30,7 +30,6 @@ Latte helps you **focus on content — not syntax**.
 - **Vite**
 - **Vue**
 - **Monaco Editor** – Code editor (used in VS Code)
-- **Tailwind CSS** – Styling system
 
 ## 🔹 Backend
 

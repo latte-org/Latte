@@ -1,176 +1,318 @@
-<template>
-  <div ref="editorContainer" class="monaco-editor-container"></div>
-</template>
-
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import loader from '@monaco-editor/loader';
+import { ref, onMounted, onUnmounted, watch } from 'vue'
+import loader from '@monaco-editor/loader'
+import type { DiagnosticInfo } from '@/types'
+import { defineTypstThemes, registerTypstLanguage } from '@/lib/typst-language'
 
 const props = defineProps<{
-  filePath: string;
-  content: string;
-}>();
+  filePath: string
+  content: string
+  diagnostics?: DiagnosticInfo[]
+  colorMode?: 'light' | 'dark'
+  fontSize?: number
+  showLineNumbers?: boolean
+}>()
 
 const emit = defineEmits<{
-  'content-changed': [content: string];
-}>();
+  'content-changed': [content: string]
+}>()
 
-const editorContainer = ref<HTMLElement | null>(null);
-let editor: any = null;
-let monaco: any = null;
+const editorContainer = ref<HTMLElement | null>(null)
+let editor: any = null
+let monaco: any = null
+let applyingExternalContent = false
 
-// Configure Monaco for Typst
-const configureMonaco = (monacoInstance: any) => {
-  monaco = monacoInstance;
+const monacoTheme = () =>
+  props.colorMode === 'dark' ? 'latte-dark' : 'latte-light'
 
-  // Register Typst language
-  monaco.languages.register({ id: 'typst' });
+const updateMarkers = (diagnostics: DiagnosticInfo[] = []) => {
+  if (!editor || !monaco) return
+  const model = editor.getModel()
+  if (!model) return
 
-  // Set Typst language configuration
-  monaco.languages.setLanguageConfiguration('typst', {
-    comments: {
-      lineComment: '//',
-      blockComment: ['/*', '*/'],
-    },
-    brackets: [
-      ['{', '}'],
-      ['[', ']'],
-      ['(', ')'],
-    ],
-    autoClosingPairs: [
-      { open: '{', close: '}' },
-      { open: '[', close: ']' },
-      { open: '(', close: ')' },
-      { open: '"', close: '"' },
-      { open: "'", close: "'" },
-    ],
-    surroundingPairs: [
-      { open: '{', close: '}' },
-      { open: '[', close: ']' },
-      { open: '(', close: ')' },
-      { open: '"', close: '"' },
-      { open: "'", close: "'" },
-    ],
-  });
+  const markers = diagnostics.map((diagnostic) => {
+    const startLine = Math.max(1, diagnostic.span?.line ?? 1)
+    const startColumn = Math.max(1, diagnostic.span?.column ?? 1)
+    const endLine = Math.max(startLine, diagnostic.span?.end_line ?? startLine)
+    let endColumn = diagnostic.span?.end_column ?? startColumn + 1
+    if (endLine === startLine && endColumn <= startColumn) {
+      endColumn = startColumn + 1
+    }
 
-  // Set Typst tokens (simplified)
-  monaco.languages.setMonarchTokensProvider('typst', {
-    tokenizer: {
-      root: [
-        [/\/\/.*$/, 'comment'],
-        [/\/\*[\s\S]*?\*\//, 'comment'],
-        [/"[^"]*"/, 'string'],
-        [/'[^']*'/, 'string'],
-        [/\b(set|let|show|if|else|for|while|return|import|include)\b/, 'keyword'],
-        [/\b(true|false|none|auto)\b/, 'constant'],
-        [/[=+\-*\/<>!]+/, 'operator'],
-        [/\d+\.?\d*/, 'number'],
-        [/[a-zA-Z_][a-zA-Z0-9_]*/, 'identifier'],
-      ],
-    },
-  });
+    return {
+      severity:
+        diagnostic.severity === 'error'
+          ? monaco.MarkerSeverity.Error
+          : monaco.MarkerSeverity.Warning,
+      message: diagnostic.message,
+      startLineNumber: startLine,
+      startColumn,
+      endLineNumber: endLine,
+      endColumn,
+      source: 'typst',
+    }
+  })
 
-  // Set Typst theme
-  monaco.editor.defineTheme('typst-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [
-      { token: 'comment', foreground: '6A9955' },
-      { token: 'string', foreground: 'CE9178' },
-      { token: 'keyword', foreground: '569CD6' },
-      { token: 'constant', foreground: '4EC9B0' },
-      { token: 'operator', foreground: 'D4D4D4' },
-      { token: 'number', foreground: 'B5CEA8' },
-    ],
-    colors: {
-      'editor.background': '#1e1e1e',
-    },
-  });
-};
+  monaco.editor.setModelMarkers(model, 'typst', markers)
+}
 
 onMounted(async () => {
-  if (!editorContainer.value) return;
+  if (!editorContainer.value) return
 
   try {
-    // Load Monaco Editor
-    const monacoInstance = await loader.init();
-    configureMonaco(monacoInstance);
+    const monacoInstance = await loader.init()
+    monaco = monacoInstance
+    registerTypstLanguage(monacoInstance)
+    defineTypstThemes(monacoInstance)
 
-    // Create editor instance
+    const uri = monacoInstance.Uri.parse(
+      `inmemory://latte/${encodeURIComponent(props.filePath || 'untitled.typ')}`
+    )
+    let model = monacoInstance.editor.getModel(uri)
+    if (model) {
+      model.setValue(props.content)
+    } else {
+      model = monacoInstance.editor.createModel(props.content, 'typst', uri)
+    }
+
     editor = monacoInstance.editor.create(editorContainer.value, {
-      value: props.content,
-      language: 'typst',
-      theme: 'typst-dark',
+      model,
+      theme: monacoTheme(),
       automaticLayout: true,
-      fontSize: 14,
-      minimap: { enabled: true },
+      fontSize: props.fontSize ?? 14,
+      fontFamily:
+        "'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace",
+      fontLigatures: true,
+      lineHeight: Math.round((props.fontSize ?? 14) * 1.6),
+      letterSpacing: 0.2,
+      minimap: {
+        enabled: true,
+        scale: 1,
+        showSlider: 'mouseover',
+        renderCharacters: false,
+        maxColumn: 80,
+      },
       scrollBeyondLastLine: false,
       wordWrap: 'on',
-      lineNumbers: 'on',
+      wrappingIndent: 'same',
+      lineNumbers: props.showLineNumbers === false ? 'off' : 'on',
+      lineNumbersMinChars: 3,
+      glyphMargin: true,
+      folding: true,
+      foldingStrategy: 'indentation',
+      showFoldingControls: 'mouseover',
+      renderLineHighlight: 'all',
       renderWhitespace: 'selection',
+      renderControlCharacters: true,
+      rulers: [100],
       tabSize: 2,
       insertSpaces: true,
-    });
+      detectIndentation: true,
+      autoIndent: 'full',
+      formatOnPaste: true,
+      formatOnType: false,
+      matchBrackets: 'always',
+      bracketPairColorization: { enabled: true },
+      guides: {
+        bracketPairs: true,
+        indentation: true,
+        highlightActiveIndentation: true,
+      },
+      links: true,
+      colorDecorators: true,
+      smoothScrolling: true,
+      cursorBlinking: 'smooth',
+      cursorSmoothCaretAnimation: 'on',
+      cursorStyle: 'line',
+      multiCursorModifier: 'alt',
+      accessibilitySupport: 'auto',
+      find: {
+        addExtraSpaceOnTop: false,
+        autoFindInSelection: 'multiline',
+        seedSearchStringFromSelection: 'selection',
+      },
+      suggest: {
+        showKeywords: true,
+        showSnippets: true,
+        showFunctions: true,
+        showConstants: true,
+        preview: true,
+        insertMode: 'insert',
+      },
+      quickSuggestions: {
+        other: true,
+        comments: false,
+        strings: false,
+      },
+      suggestOnTriggerCharacters: true,
+      acceptSuggestionOnEnter: 'on',
+      tabCompletion: 'on',
+      wordBasedSuggestions: 'currentDocument',
+      parameterHints: { enabled: true },
+      hover: { enabled: true, delay: 300 },
+      contextmenu: true,
+      mouseWheelZoom: true,
+      dragAndDrop: true,
+      emptySelectionClipboard: true,
+      copyWithSyntaxHighlighting: true,
+      padding: { top: 16, bottom: 16 },
+      scrollbar: {
+        verticalScrollbarSize: 10,
+        horizontalScrollbarSize: 10,
+        useShadows: false,
+      },
+      overviewRulerLanes: 3,
+      overviewRulerBorder: false,
+      hideCursorInOverviewRuler: false,
+      fixedOverflowWidgets: true,
+    })
 
-    // Listen for content changes
+    // Standard editor keybindings / actions
+    editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyF, () => {
+      editor.getAction('actions.find')?.run()
+    })
+    editor.addCommand(
+      monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyF,
+      () => {
+        editor.getAction('editor.action.startFindReplaceAction')?.run()
+      }
+    )
+    editor.addCommand(
+      monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyO,
+      () => {
+        editor.getAction('editor.action.quickOutline')?.run()
+      }
+    )
+    editor.addCommand(
+      monacoInstance.KeyMod.Alt | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyF,
+      () => {
+        editor.getAction('editor.action.formatDocument')?.run()
+      }
+    )
+    editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Slash, () => {
+      editor.getAction('editor.action.commentLine')?.run()
+    })
+    editor.addCommand(
+      monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyD,
+      () => {
+        editor.getAction('editor.action.addSelectionToNextFindMatch')?.run()
+      }
+    )
+
     editor.onDidChangeModelContent(() => {
-      const content = editor.getValue();
-      emit('content-changed', content);
-    });
+      if (applyingExternalContent) return
+      emit('content-changed', editor.getValue())
+    })
 
-    // Note: Diagnostics can be added later if needed
-    // For now, we focus on basic editing and compilation
+    updateMarkers(props.diagnostics)
+    editor.focus()
   } catch (error) {
-    console.error('Failed to initialize Monaco Editor:', error);
+    console.error('Failed to initialize Monaco Editor:', error)
   }
-});
+})
 
-// Watch for content changes from parent
 watch(
   () => props.content,
   (newContent) => {
-    if (editor && editor.getValue() !== newContent) {
-      editor.setValue(newContent);
-    }
+    if (!editor) return
+    if (editor.getValue() === newContent) return
+    applyingExternalContent = true
+    const position = editor.getPosition()
+    editor.setValue(newContent)
+    if (position) editor.setPosition(position)
+    applyingExternalContent = false
   }
-);
+)
 
-// Watch for file path changes
 watch(
   () => props.filePath,
-  async (newPath) => {
-    if (editor && newPath) {
-      const content = await invoke<string>('read_file', { path: newPath });
-      editor.setValue(content);
-    }
+  (filePath) => {
+    if (!editor || !monaco) return
+    const model = editor.getModel()
+    if (!model) return
+    // Keep language as typst; path is informational for URI-less in-memory model
+    void filePath
   }
-);
+)
 
-const getLineNumber = (offset: number): number => {
-  if (!editor) return 1;
-  const model = editor.getModel();
-  const position = model.getPositionAt(offset);
-  return position.lineNumber;
-};
+watch(
+  () => props.diagnostics,
+  (newDiagnostics) => {
+    updateMarkers(newDiagnostics ?? [])
+  },
+  { deep: true }
+)
 
-const getColumnNumber = (offset: number): number => {
-  if (!editor) return 1;
-  const model = editor.getModel();
-  const position = model.getPositionAt(offset);
-  return position.column;
-};
+watch(
+  () => props.colorMode,
+  () => {
+    if (monaco) monaco.editor.setTheme(monacoTheme())
+  }
+)
+
+watch(
+  () => props.fontSize,
+  (size) => {
+    if (!editor || !size) return
+    editor.updateOptions({
+      fontSize: size,
+      lineHeight: Math.round(size * 1.6),
+    })
+  }
+)
+
+watch(
+  () => props.showLineNumbers,
+  (show) => {
+    if (!editor) return
+    editor.updateOptions({
+      lineNumbers: show === false ? 'off' : 'on',
+    })
+  }
+)
 
 onUnmounted(() => {
   if (editor) {
-    editor.dispose();
+    const model = editor.getModel()
+    editor.dispose()
+    // Dispose model only if no other editor uses it
+    if (model && !model.isDisposed()) {
+      model.dispose()
+    }
   }
-});
+  editor = null
+  monaco = null
+})
+
+const goToOffset = (offset: number) => {
+  if (!editor) return
+  const model = editor.getModel()
+  const position = model.getPositionAt(offset)
+  editor.setPosition(position)
+  editor.revealPositionInCenter(position)
+  editor.focus()
+}
+
+const goToLine = (line: number, column = 1) => {
+  if (!editor) return
+  editor.setPosition({ lineNumber: line, column })
+  editor.revealPositionInCenter({ lineNumber: line, column })
+  editor.focus()
+}
+
+defineExpose({ goToOffset, goToLine })
 </script>
 
+<template>
+  <div
+    ref="editorContainer"
+    class="monaco-host h-full w-full overflow-hidden rounded-2xl"
+  />
+</template>
+
 <style scoped>
-.monaco-editor-container {
-  width: 100%;
-  height: 100%;
+.monaco-host :deep(.monaco-editor),
+.monaco-host :deep(.overflow-guard) {
+  border-radius: 1rem;
 }
 </style>

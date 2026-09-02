@@ -6,61 +6,60 @@ const TEMPLATES: &[(&str, &str)] = &[
     (
         "article",
         r#"#set page(margin: (top: 2.5cm, bottom: 2.5cm, left: 2.5cm, right: 2.5cm))
-#set text(font: "Linux Libertine", size: 11pt)
+#set text(font: "Libertinus Serif", size: 11pt)
 #set heading(numbering: "1.")
 
 = Introduction
-@lorem(10)
+#lorem(10)
 
 == Background
-@lorem(15)
+#lorem(15)
 
 == Methodology
-@lorem(20)
+#lorem(20)
 
 = Results
-@lorem(15)
+#lorem(15)
 
 = Conclusion
-@lorem(10)
-
-#bibliography("references.bib")
+#lorem(10)
 "#,
     ),
     (
         "letter",
         r#"#set page(margin: (top: 2.5cm, bottom: 2.5cm, left: 2.5cm, right: 2.5cm))
+#set text(font: "Libertinus Serif", size: 11pt)
 
-#let sender = (
-  name: "Your Name",
-  address: "Your Address",
-  city: "City, Country"
-)
+#align(right)[
+  Your Name \
+  Your Address \
+  City, Country
+]
 
-#let recipient = (
-  name: "Recipient Name",
-  address: "Recipient Address",
-  city: "City, Country"
-)
+#v(1.5cm)
 
-#show: letter.with(
-  sender: sender,
-  recipient: recipient,
-  date: datetime.today(),
-)
+#align(left)[
+  Recipient Name \
+  Recipient Address \
+  City, Country
+]
 
-Dear #recipient.name,
+#v(1cm)
 
-@lorem(20)
+Dear Recipient Name,
 
-Sincerely,
-#sender.name
+#lorem(20)
+
+#v(1cm)
+
+Sincerely, \
+Your Name
 "#,
     ),
     (
         "cv",
         r#"#set page(margin: 2cm)
-#set text(font: "Linux Libertine", size: 10pt)
+#set text(font: "Libertinus Serif", size: 10pt)
 
 = Your Name
 #set text(size: 9pt)
@@ -88,31 +87,32 @@ Major in Subject
     (
         "report",
         r#"#set page(margin: 2.5cm)
-#set text(font: "Linux Libertine", size: 11pt)
+#set text(font: "Libertinus Serif", size: 11pt)
 #set heading(numbering: "1.")
 
 = Executive Summary
-@lorem(15)
+#lorem(15)
 
 = Introduction
-@lorem(20)
+#lorem(20)
 
 == Objectives
-@lorem(10)
+#lorem(10)
 
 = Methodology
-@lorem(25)
+#lorem(25)
 
 = Findings
-@lorem(30)
+#lorem(30)
 
 = Recommendations
-@lorem(20)
+#lorem(20)
 
 = Conclusion
-@lorem(15)
+#lorem(15)
 
 = Appendix
+#lorem(10)
 "#,
     ),
 ];
@@ -124,7 +124,7 @@ pub async fn create_project(
     template: Option<String>,
 ) -> Result<String, String> {
     let project_path = PathBuf::from(&name);
-    
+
     // Create project directory
     fs::create_dir_all(&project_path)
         .map_err(|e| format!("Failed to create project directory: {}", e))?;

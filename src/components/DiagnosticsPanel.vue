@@ -31,8 +31,7 @@
           </svg>
           <span class="severity-label">{{ diagnostic.severity.toUpperCase() }}</span>
           <span v-if="diagnostic.span" class="location">
-            Line {{ getLineNumber(diagnostic.span.start) }}, Col
-            {{ getColumnNumber(diagnostic.span.start) }}
+            Line {{ diagnostic.span.line }}, Col {{ diagnostic.span.column }}
           </span>
         </div>
         <div class="diagnostic-message">{{ diagnostic.message }}</div>
@@ -47,23 +46,15 @@
 </template>
 
 <script setup lang="ts">
+import type { DiagnosticInfo } from '../types';
+
 defineProps<{
-  diagnostics: any[];
+  diagnostics: DiagnosticInfo[];
 }>();
 
 defineEmits<{
-  'diagnostic-clicked': [diagnostic: any];
+  'diagnostic-clicked': [diagnostic: DiagnosticInfo];
 }>();
-
-const getLineNumber = (offset: number): number => {
-  // This is a simplified calculation - in a real implementation,
-  // you'd need access to the file content to calculate line numbers
-  return Math.floor(offset / 80) + 1;
-};
-
-const getColumnNumber = (offset: number): number => {
-  return (offset % 80) + 1;
-};
 </script>
 
 <style scoped>
